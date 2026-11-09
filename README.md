@@ -1,62 +1,61 @@
-# tblocker for Remnawave nodes (KafkaVPN)
+# tblocker для нод Remnawave (KafkaVPN)
 
-Installs [xray-torrent-blocker](https://github.com/kutovoys/xray-torrent-blocker) on a Remnawave node with one command and connects it to the Solobot webhook.
+Ставит [xray-torrent-blocker](https://github.com/kutovoys/xray-torrent-blocker) на ноду Remnawave одной командой и подключает его к вебхуку Solobot.
 
-## Install
+## Установка
 
-Run on every node (as root):
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) --webhook BOT_DOMAIN
-```
-
-`BOT_DOMAIN` is the bot's domain without `https://`. The script itself turns it into `https://BOT_DOMAIN/tblocker/webhook`.
-
-On a node behind a cascade, add the entry nodes to the exceptions so the whole entry server does not get blocked:
+Запускать на каждой ноде (от root):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) \
-  --webhook BOT_DOMAIN --bypass twcascade1.kafka7004.ru,twcascade2.kafka7004.ru
+bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) --webhook ДОМЕН_БОТА
 ```
 
-## What the script does
+`ДОМЕН_БОТА` — домен твоего бота без `https://`. Скрипт сам превращает его в `https://ДОМЕН_БОТА/tblocker/webhook`.
 
-1. Adds the `/var/log/remnanode` volume to `/opt/remnanode/docker-compose.yml`. It makes a backup first and runs `docker compose config` afterwards.
-2. Recreates the node container.
-3. Sets up logrotate (50M × 5, copytruncate).
-4. Removes the old apt package `tblocker`, if it is installed.
-5. Downloads the latest tblocker release from GitHub and checks its SHA256.
-6. Writes `/opt/tblocker/config.yaml` and the systemd service.
-7. Runs a self-test on an isolated copy with the webhook turned off. It blocks the test IP 203.0.113.200, makes sure the rule appeared in iptables, and removes it.
-8. Starts the service, makes sure it stays up, and checks whether Xray is writing the log.
+## Что делает скрипт
 
-Running it again is safe. The old config is backed up, and the webhook, block duration, hostname and bypass list carry over.
+1. Добавляет volume `/var/log/remnanode` в `/opt/remnanode/docker-compose.yml`. Перед этим делает бэкап, после проверяет файл через `docker compose config`.
+2. Пересоздаёт контейнер ноды, если папка ещё не подключена.
+3. Настраивает logrotate (50M × 5, copytruncate).
+4. Удаляет старый apt-пакет `tblocker`, если он стоит.
+5. Скачивает последний релиз tblocker с GitHub и проверяет SHA256.
+6. Пишет `/opt/tblocker/config.yaml` и systemd-сервис.
+7. Делает самотест на изолированной копии с выключенным вебхуком: блокирует тестовый IP 203.0.113.200, проверяет, что правило появилось в iptables, и убирает его.
+8. Запускает сервис, проверяет, что он не падает, и смотрит, пишет ли Xray лог.
 
-## Done by hand
+Повторный запуск безопасен. Старый конфиг сохраняется в бэкап, вебхук, срок блокировки, hostname и bypass-список переносятся.
 
-- **The Remnawave panel.** Open Profiles → Xray config and add `log`, the `TORRENT` blackhole outbound and the bittorrent rule in `routing`. The inbounds need `sniffing.enabled: true`. The script prints the exact JSON at the end.
-- **The tBlocker module in Solobot.** Put each node's hostname in `SERVER_COUNTRIES`. The script prints it in its final summary.
+## Что делается руками
 
-## Options
+- **Панель Remnawave.** В Профили → конфиг Xray добавь `log`, outbound `TORRENT` с протоколом blackhole и правило для bittorrent в `routing`. У инбаундов должно быть `sniffing.enabled: true`. Точный JSON скрипт выводит в конце.
+- **Модуль tBlocker в Solobot.** Впиши hostname каждой ноды в `SERVER_COUNTRIES`. Скрипт печатает его в итоговой сводке.
 
-| Option | Description |
+## Параметры
+
+| Параметр | Описание |
 |---|---|
-| `--webhook URL\|DOMAIN` | bot webhook |
-| `--no-webhook` | no webhooks |
-| `--duration MIN` | block duration, default 30 |
-| `--bypass LIST` | IPs/domains that are never blocked |
-| `--hostname NAME` | server name in the webhook (default: `hostname`) |
-| `--firewall iptables\|nft` | default iptables |
-| `--version vX.Y.Z` | pin a tblocker version |
-| `--skip-node` | do not touch docker-compose (for Xray outside docker) |
-| `--no-restart` | do not restart the node container |
-| `-y` | ask no questions |
-| `--uninstall` | remove tblocker completely |
+| `--webhook URL\|ДОМЕН` | вебхук бота |
+| `--no-webhook` | без вебхуков |
+| `--duration МИН` | срок блокировки, по умолчанию 30 |
+| `--bypass СПИСОК` | IP/домены, которые никогда не блокируются |
+| `--hostname ИМЯ` | имя сервера в вебхуке (по умолчанию `hostname`) |
+| `--firewall iptables\|nft` | по умолчанию iptables |
+| `--version vX.Y.Z` | зафиксировать версию tblocker |
+| `--skip-node` | не трогать docker-compose (для Xray вне docker) |
+| `--no-restart` | не перезапускать контейнер ноды |
+| `-y` | ничего не спрашивать |
+| `--uninstall` | полностью удалить tblocker |
 
-## Useful commands
+## Полезные команды
 
 ```bash
-journalctl -u tblocker -f                  # live log
-iptables -t raw -S TBLOCKER_BLOCKED        # who is blocked right now
-cat /opt/tblocker/blocked_ips.json         # blocks with users and expiry times
+journalctl -u tblocker -f                  # лог в реальном времени
+iptables -t raw -S TBLOCKER_BLOCKED        # кто заблокирован сейчас
+cat /opt/tblocker/blocked_ips.json         # блокировки с пользователями и сроками
+```
+
+## Удаление
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) --uninstall
 ```

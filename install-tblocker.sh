@@ -1,51 +1,50 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  tblocker installer for Remnawave nodes (+ Solobot webhook)
+#  Установщик tblocker для нод Remnawave (+ вебхук Solobot)
 #
-#  What it does (steps 1 and 3 of the manual install):
-#    1. Mounts /var/log/remnanode into the remnanode container (edits
-#       docker-compose.yml with a backup and validation), sets up logrotate
-#    2. Removes the old apt package "tblocker" if present
-#    3. Downloads tblocker from GitHub releases (verifies sha256)
-#    4. Writes /opt/tblocker/config.yaml and the systemd service
-#    5. Self-test: blocks the test IP 203.0.113.200 on an isolated copy
-#       (webhook OFF), confirms the iptables rule appears, cleans up after itself
-#    6. Starts the service and checks it is running
+#  Что делает (шаги 1 и 3 ручной инструкции):
+#    1. Пробрасывает /var/log/remnanode в контейнер remnanode (правит
+#       docker-compose.yml с бэкапом и проверкой), настраивает logrotate
+#    2. Удаляет старый apt-пакет tblocker, если он стоит
+#    3. Скачивает tblocker из релизов GitHub (проверяет sha256)
+#    4. Пишет /opt/tblocker/config.yaml и systemd-сервис
+#    5. Самотест: на изолированной копии (вебхук ВЫКЛ) блокирует тестовый
+#       IP 203.0.113.200, проверяет, что правило появилось, и убирает его
+#    6. Запускает сервис и проверяет, что он работает
 #
-#  The Xray settings in the Remnawave panel (step 2) are done by hand — the
-#  script prints the JSON to paste at the end.
+#  Настройку Xray в панели Remnawave (шаг 2) нужно сделать руками —
+#  скрипт в конце выведет готовый JSON.
 #
-#  Usage:
+#  Запуск:
 #    bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) \
 #         --webhook bot.example.com
 #
-#  Options:
-#    --webhook URL|DOMAIN  bot webhook. A bare domain becomes
-#                          https://DOMAIN/tblocker/webhook
-#    --no-webhook          do not send webhooks
-#    --duration MIN        block duration in minutes (default 30)
-#    --bypass LIST         comma-separated IPs/domains that are never blocked
-#                          (e.g. cascade entry nodes)
-#    --hostname NAME       server name in the webhook (default: hostname)
-#    --firewall MODE       iptables (default) | nft
-#    --version vX.Y.Z      tblocker version (default: latest release)
-#    --log-file PATH       Xray access log (default /var/log/remnanode/access.log)
-#    --node-dir DIR        remnanode folder (default /opt/remnanode)
-#    --skip-node           do not touch docker-compose / the node container
-#    --no-restart          do not restart the node container (only edit compose)
-#    --skip-selftest       skip the self-test
-#    --tarball PATH        install from a local release archive (no internet)
-#    -y, --yes             ask no questions
-#    --uninstall           remove tblocker completely
-#    -h, --help            help
+#  Параметры:
+#    --webhook URL|ДОМЕН   вебхук бота. Голый домен превращается в
+#                          https://ДОМЕН/tblocker/webhook
+#    --no-webhook          не отправлять вебхуки
+#    --duration МИН        срок блокировки в минутах (по умолчанию 30)
+#    --bypass СПИСОК       IP/домены через запятую, которые никогда не блокируются
+#    --hostname ИМЯ        имя сервера в вебхуке (по умолчанию hostname)
+#    --firewall РЕЖИМ      iptables (по умолчанию) | nft
+#    --version vX.Y.Z      версия tblocker (по умолчанию последний релиз)
+#    --log-file ПУТЬ       access-лог Xray (по умолчанию /var/log/remnanode/access.log)
+#    --node-dir ПАПКА      папка remnanode (по умолчанию /opt/remnanode)
+#    --skip-node           не трогать docker-compose и контейнер ноды
+#    --no-restart          не перезапускать контейнер ноды (только править compose)
+#    --skip-selftest       пропустить самотест
+#    --tarball ПУТЬ        установить из локального архива релиза (без интернета)
+#    -y, --yes             ничего не спрашивать
+#    --uninstall           полностью удалить tblocker
+#    -h, --help            справка
 #
-#  Re-running is safe: the previous config is backed up, and the webhook,
-#  duration, hostname and bypass list are carried over unless new ones are given.
+#  Повторный запуск безопасен: старый конфиг сохраняется в бэкап, вебхук,
+#  срок, hostname и bypass-список переносятся, если не заданы новые.
 # =============================================================================
 
 set -Eeuo pipefail
 
-# ----------------------------- constants ------------------------------------
+# ----------------------------- константы ------------------------------------
 REPO="kutovoys/xray-torrent-blocker"
 FALLBACK_VERSION="v1.1.0"
 INSTALL_DIR="/opt/tblocker"
@@ -55,10 +54,11 @@ SERVICE_PATH="/etc/systemd/system/tblocker.service"
 LOGROTATE_PATH="/etc/logrotate.d/remnanode"
 LOG_DIR_DEFAULT="/var/log/remnanode"
 VOLUME_LINE="/var/log/remnanode:/var/log/remnanode"
-TEST_IP="203.0.113.200"   # TEST-NET-3 (RFC 5737), not routed on the internet
+TEST_IP="203.0.113.200"   # TEST-NET-3 (RFC 5737), в интернете не маршрутизируется
 CHAIN="TBLOCKER_BLOCKED"
+SCRIPT_URL="https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh"
 
-# ----------------------------- defaults -------------------------------------
+# ----------------------------- значения по умолчанию ------------------------
 WEBHOOK=""
 WEBHOOK_SET=0
 NO_WEBHOOK=0
@@ -79,7 +79,7 @@ UNINSTALL=0
 TMP_DIR=""
 SELFTEST_PID=""
 
-# ----------------------------- output ---------------------------------------
+# ----------------------------- вывод ----------------------------------------
 if [ -t 1 ]; then
   C_R=$'\033[0;31m'; C_G=$'\033[0;32m'; C_Y=$'\033[1;33m'; C_B=$'\033[0;34m'; C_0=$'\033[0m'
 else
@@ -101,33 +101,33 @@ cleanup() {
   return 0
 }
 trap cleanup EXIT
-trap 'die "Error on line $LINENO (command: $BASH_COMMAND)"' ERR
+trap 'die "Ошибка в строке $LINENO (команда: $BASH_COMMAND)"' ERR
 
 usage() {
-  cat <<'USAGE'
-Usage: bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) [options]
-  --webhook URL|DOMAIN   bot webhook (a bare domain -> https://DOMAIN/tblocker/webhook)
-  --no-webhook           no webhooks
-  --duration MIN         block duration, minutes (default 30)
-  --bypass LIST          IPs/domains that are never blocked, comma-separated
-  --hostname NAME        server name in the webhook
-  --firewall MODE        iptables (default) | nft
-  --version vX.Y.Z       tblocker version (default latest)
-  --log-file PATH        Xray access log
-  --node-dir DIR         remnanode folder (default /opt/remnanode)
-  --skip-node            do not touch docker-compose
-  --no-restart           do not restart the node container
-  --skip-selftest        no self-test
-  --tarball PATH         install from a local archive
-  -y, --yes              ask no questions
-  --uninstall            remove tblocker
+  cat <<USAGE
+Запуск: bash <(curl -fsSL $SCRIPT_URL) [параметры]
+  --webhook URL|ДОМЕН    вебхук бота (голый домен -> https://ДОМЕН/tblocker/webhook)
+  --no-webhook           без вебхуков
+  --duration МИН         срок блокировки в минутах (по умолчанию 30)
+  --bypass СПИСОК        IP/домены через запятую, которые никогда не блокируются
+  --hostname ИМЯ         имя сервера в вебхуке
+  --firewall РЕЖИМ       iptables (по умолчанию) | nft
+  --version vX.Y.Z       версия tblocker (по умолчанию последняя)
+  --log-file ПУТЬ        access-лог Xray
+  --node-dir ПАПКА       папка remnanode (по умолчанию /opt/remnanode)
+  --skip-node            не трогать docker-compose
+  --no-restart           не перезапускать контейнер ноды
+  --skip-selftest        без самотеста
+  --tarball ПУТЬ         установка из локального архива
+  -y, --yes              ничего не спрашивать
+  --uninstall            удалить tblocker
 USAGE
 }
 
-# Questions go through /dev/tty, so they work with bash <(curl ...) and curl | bash
+# Вопросы идут через /dev/tty, поэтому работают и с bash <(curl ...), и с curl | bash
 HAS_TTY=0
 if [ -r /dev/tty ] && [ -w /dev/tty ] && { : </dev/tty; } 2>/dev/null; then HAS_TTY=1; fi
-ask() { # ask "question" default -> echoes answer
+ask() { # ask "вопрос" значение_по_умолчанию -> печатает ответ
   local q="$1" def="${2:-}" ans=""
   if [ "$ASSUME_YES" -eq 1 ] || [ "$HAS_TTY" -eq 0 ]; then printf '%s' "$def"; return; fi
   printf '%s' "$q" >/dev/tty
@@ -135,8 +135,8 @@ ask() { # ask "question" default -> echoes answer
   printf '%s' "${ans:-$def}"
 }
 
-# ----------------------------- arguments ------------------------------------
-need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die "Option $1 requires a value"; }
+# ----------------------------- аргументы ------------------------------------
+need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die "Параметру $1 нужно значение"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --webhook)       need_val "$@"; WEBHOOK="$2"; WEBHOOK_SET=1; shift 2 ;;
@@ -164,20 +164,21 @@ while [ $# -gt 0 ]; do
     -y|--yes)        ASSUME_YES=1; shift ;;
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)       usage; exit 0 ;;
-    *) die "Unknown option: $1 (see --help)" ;;
+    *) die "Неизвестный параметр: $1 (см. --help)" ;;
   esac
 done
 
-# ----------------------------- helpers --------------------------------------
-# Like `grep -q`, but reads ALL input. With pipefail, `cmd | grep -q` fails when
-# cmd gets SIGPIPE after grep exits early (e.g. lsmod with long output).
+# ----------------------------- помощники ------------------------------------
+# Как `grep -q`, но читает ВЕСЬ вход. С pipefail конструкция `cmd | grep -q`
+# падает, когда cmd получает SIGPIPE после раннего выхода grep (например, lsmod
+# с длинным выводом).
 has() { grep "$@" >/dev/null; }
 
-yaml_q() { # string -> "escaped string" for YAML
+yaml_q() { # строка -> "экранированная строка" для YAML
   local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"
 }
 
-# Read a scalar key from the existing config (strip quotes)
+# Прочитать скалярный ключ из существующего конфига (без кавычек)
 cfg_get() {
   [ -f "$CONFIG_PATH" ] || return 0
   awk -v k="$1" '
@@ -187,7 +188,7 @@ cfg_get() {
       print; exit
     }' "$CONFIG_PATH"
 }
-# Read the BypassIPS list from the existing config
+# Прочитать список BypassIPS из существующего конфига
 cfg_get_bypass() {
   [ -f "$CONFIG_PATH" ] || return 0
   awk '
@@ -220,11 +221,11 @@ detect_pkg() {
   else PKG=""; fi
 }
 APT_UPDATED=0
-pkg_install() { # pkg_install <apt-name> <rpm-name>
+pkg_install() { # pkg_install <пакет-apt> <пакет-rpm>
   case "$PKG" in
     apt)
       if [ "$APT_UPDATED" -eq 0 ]; then
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null || warn "apt-get update finished with errors"
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null || warn "apt-get update завершился с ошибками"
         APT_UPDATED=1
       fi
       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$1" >/dev/null ;;
@@ -233,14 +234,14 @@ pkg_install() { # pkg_install <apt-name> <rpm-name>
     *) return 1 ;;
   esac
 }
-ensure_cmd() { # ensure_cmd <command> <apt-pkg> <rpm-pkg>
+ensure_cmd() { # ensure_cmd <команда> <пакет-apt> <пакет-rpm>
   command -v "$1" >/dev/null 2>&1 && return 0
-  info "Installing $2..."
-  pkg_install "$2" "$3" || die "Could not install $2 — install it manually"
-  command -v "$1" >/dev/null 2>&1 || die "Command $1 is still missing after installing $2"
+  info "Устанавливаю $2..."
+  pkg_install "$2" "$3" || die "Не удалось установить $2 — поставь его вручную"
+  command -v "$1" >/dev/null 2>&1 || die "Команды $1 нет даже после установки $2"
 }
 
-# Remove one test/stale IP from the firewall (never touches the rest)
+# Убрать один тестовый/устаревший IP из файрвола (остальные правила не трогает)
 fw_unblock() {
   local ip="$1"
   if [ "$FIREWALL" = "iptables" ]; then
@@ -261,10 +262,10 @@ fw_has_ip() {
 }
 
 # ============================================================================
-#  UNINSTALL
+#  УДАЛЕНИЕ
 # ============================================================================
 do_uninstall() {
-  step "Removing tblocker"
+  step "Удаление tblocker"
   if command -v systemctl >/dev/null 2>&1; then
     systemctl stop tblocker 2>/dev/null || true
     systemctl disable tblocker 2>/dev/null || true
@@ -283,35 +284,35 @@ do_uninstall() {
     nft delete table inet tblocker 2>/dev/null || true
   fi
   rm -rf "$INSTALL_DIR"
-  ok "tblocker removed: service, firewall rules and $INSTALL_DIR"
-  info "The docker-compose volume, logrotate and logs in $LOG_DIR_DEFAULT were left untouched (the node needs them)."
+  ok "tblocker удалён: сервис, правила файрвола и $INSTALL_DIR"
+  info "Volume в docker-compose, logrotate и логи в $LOG_DIR_DEFAULT оставлены (они нужны ноде)."
 }
 
 # ============================================================================
-#  PRE-FLIGHT CHECKS
+#  ПРЕДВАРИТЕЛЬНЫЕ ПРОВЕРКИ
 # ============================================================================
-[ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
-[ "$(uname -s)" = "Linux" ] || die "Linux only."
+[ "$(id -u)" -eq 0 ] || die "Запускай от root (sudo)."
+[ "$(uname -s)" = "Linux" ] || die "Только для Linux."
 
 if [ "$UNINSTALL" -eq 1 ]; then do_uninstall; exit 0; fi
 
-step "Checking the system"
+step "Проверка системы"
 command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] \
-  || die "systemd is required (no /run/systemd/system found)."
+  || die "Нужен systemd (нет /run/systemd/system)."
 
 case "$(uname -m)" in
   x86_64|amd64)  ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
-  *) die "Unsupported architecture: $(uname -m)" ;;
+  *) die "Архитектура не поддерживается: $(uname -m)" ;;
 esac
-case "$FIREWALL" in iptables|nft) ;; *) die "--firewall must be iptables or nft" ;; esac
-[[ "$LOG_FILE" = /* ]] || die "--log-file must be an absolute path"
+case "$FIREWALL" in iptables|nft) ;; *) die "--firewall должен быть iptables или nft" ;; esac
+[[ "$LOG_FILE" = /* ]] || die "--log-file должен быть абсолютным путём"
 
 detect_pkg
-[ -n "$PKG" ] || warn "No package manager found (apt/dnf/yum) — dependencies must already be installed."
-ok "Architecture: $ARCH, packages: ${PKG:-none}, firewall: $FIREWALL"
+[ -n "$PKG" ] || warn "Пакетный менеджер не найден (apt/dnf/yum) — зависимости должны уже стоять."
+ok "Архитектура: $ARCH, пакеты: ${PKG:-нет}, файрвол: $FIREWALL"
 
-# ---------------- parameters (carried over from the old config) ------------
+# ---------------- параметры (переносятся из старого конфига) ---------------
 OLD_WEBHOOK="$(cfg_get WebhookURL || true)"
 OLD_SEND="$(cfg_get SendWebhook || true)"
 OLD_DURATION="$(cfg_get BlockDuration || true)"
@@ -323,9 +324,9 @@ if [ "$NO_WEBHOOK" -eq 1 ]; then
 elif [ "$WEBHOOK_SET" -eq 0 ]; then
   if [ "$OLD_SEND" = "true" ] && [ -n "$OLD_WEBHOOK" ] && [[ "$OLD_WEBHOOK" != *"your-webhook-url"* ]]; then
     WEBHOOK="$OLD_WEBHOOK"
-    info "Webhook taken from the existing config: $WEBHOOK"
+    info "Вебхук взят из существующего конфига: $WEBHOOK"
   else
-    WEBHOOK="$(ask "Bot domain for the webhook (e.g. bot.example.com, Enter = no webhook): " "")"
+    WEBHOOK="$(ask "Домен бота для вебхука (например bot.example.com, Enter = без вебхука): " "")"
   fi
 fi
 WEBHOOK="$(printf '%s' "$WEBHOOK" | tr -d '[:space:]')"
@@ -334,20 +335,20 @@ if [ -n "$WEBHOOK" ]; then
     WEBHOOK="https://${WEBHOOK%/}/tblocker/webhook"
   fi
   [[ "$WEBHOOK" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^\"\'\ ]*)?$ ]] \
-    || die "Invalid webhook address: $WEBHOOK"
+    || die "Некорректный адрес вебхука: $WEBHOOK"
 fi
 
 if [ -z "$DURATION" ]; then
   if [[ "$OLD_DURATION" =~ ^[0-9]+$ ]] && [ "$OLD_DURATION" -gt 0 ]; then DURATION="$OLD_DURATION"; else DURATION=30; fi
 fi
-[[ "$DURATION" =~ ^[0-9]+$ ]] && [ "$DURATION" -ge 1 ] || die "--duration must be an integer >= 1"
+[[ "$DURATION" =~ ^[0-9]+$ ]] && [ "$DURATION" -ge 1 ] || die "--duration должен быть целым числом >= 1"
 
 if [ -n "$HOSTNAME_ARG" ]; then NODE_NAME="$HOSTNAME_ARG"
 elif [ -n "$OLD_HOSTNAME" ]; then NODE_NAME="$OLD_HOSTNAME"
 else NODE_NAME="$(hostname)"; fi
-[[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "Invalid hostname: $NODE_NAME"
+[[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "Некорректный hostname: $NODE_NAME"
 
-# Bypass list: 127.0.0.1, ::1 + old list + --bypass (domains -> IPv4)
+# Bypass-список: 127.0.0.1, ::1 + старый список + --bypass (домены -> IPv4)
 BYPASS=("127.0.0.1" "::1")
 add_bypass() { local v="$1" e; for e in "${BYPASS[@]}"; do [ "$e" = "$v" ] && return 0; done; BYPASS+=("$v"); }
 for v in "${OLD_BYPASS[@]}"; do [ -n "$v" ] && add_bypass "$v"; done
@@ -359,18 +360,18 @@ if [ -n "$BYPASS_ARG" ]; then
       add_bypass "$it"
     elif [[ "$it" =~ ^[A-Za-z0-9.-]+$ ]]; then
       mapfile -t res < <(getent ahostsv4 "$it" 2>/dev/null | awk '{print $1}' | sort -u)
-      [ "${#res[@]}" -gt 0 ] || die "Could not resolve $it (--bypass)"
+      [ "${#res[@]}" -gt 0 ] || die "Не удалось разрезолвить $it (--bypass)"
       for r in "${res[@]}"; do add_bypass "$r"; info "bypass: $it -> $r"; done
     else
-      die "Invalid --bypass entry: $it"
+      die "Некорректная запись в --bypass: $it"
     fi
   done
 fi
 
 # ============================================================================
-#  DEPENDENCIES
+#  ЗАВИСИМОСТИ
 # ============================================================================
-step "Dependencies"
+step "Зависимости"
 ensure_cmd curl curl curl
 ensure_cmd tar tar tar
 ensure_cmd sha256sum coreutils coreutils
@@ -379,22 +380,22 @@ ensure_cmd lsmod kmod kmod
 ensure_cmd logrotate logrotate logrotate
 if [ "$FIREWALL" = "iptables" ]; then ensure_cmd iptables iptables iptables
 else ensure_cmd nft nftables nftables; fi
-ok "Dependencies in place"
+ok "Зависимости на месте"
 
 # ============================================================================
-#  NODE: docker-compose volume + log folder + logrotate
+#  НОДА: volume в docker-compose + папка логов + logrotate
 # ============================================================================
-patch_compose() { # patch_compose <file> -> 0 changed, 2 already there, 1 error
+patch_compose() { # patch_compose <файл> -> 0 изменён, 2 уже есть, 1 ошибка
   local f="$1" svc tmp
   if grep -Eq "^[^#]*/var/log/remnanode[\"']?[[:space:]]*:[[:space:]]*/var/log/remnanode" "$f"; then
     return 2
   fi
-  # service: remnanode, otherwise the first one under services:
+  # сервис: remnanode, иначе первый в services:
   if grep -Eq '^[[:space:]]+remnanode:[[:space:]]*(#.*)?$' "$f"; then svc="remnanode"
   else
     svc="$(awk '/^services:[ \t]*(#.*)?$/{s=1;next} s && /^[ \t]+[A-Za-z0-9_.-]+:[ \t]*(#.*)?$/{sub(/^[ \t]+/,"");sub(/:.*/,"");print;exit} s && /^[^ \t#]/{exit}' "$f")"
   fi
-  [ -n "$svc" ] || { warn "No service found in $f"; return 1; }
+  [ -n "$svc" ] || { warn "В $f не найден ни один сервис"; return 1; }
 
   tmp="$(mktemp)"
   if ! awk -v svc="$svc" -v vol="$VOLUME_LINE" '
@@ -402,7 +403,7 @@ patch_compose() { # patch_compose <file> -> 0 changed, 2 already there, 1 error
     function blank(s) { return s ~ /^[ \t]*(#.*)?$/ }
     { L[NR] = $0 }
     END {
-      # 1) locate the service block
+      # 1) найти блок сервиса
       for (i = 1; i <= NR; i++) if (L[i] ~ "^[ ]+" svc ":[ \t]*(#.*)?$") { s = i; break }
       if (!s) exit 3
       si = ind(L[s]); ci = -1; e = s
@@ -413,11 +414,11 @@ patch_compose() { # patch_compose <file> -> 0 changed, 2 already there, 1 error
         e = i
       }
       if (ci < 0) exit 3
-      # 2) look for volumes: at child level
+      # 2) найти volumes: на уровне дочерних ключей
       v = 0; ii = -1; last = 0
       for (i = s + 1; i <= e; i++) {
         if (!v && ind(L[i]) == ci && L[i] ~ /^[ ]*volumes:/) {
-          if (L[i] !~ /^[ ]*volumes:[ \t]*(#.*)?$/) exit 4   # inline form — do not touch
+          if (L[i] !~ /^[ ]*volumes:[ \t]*(#.*)?$/) exit 4   # inline-форма — не трогаем
           v = i; last = i; continue
         }
         if (v && !blank(L[i])) {
@@ -437,17 +438,17 @@ patch_compose() { # patch_compose <file> -> 0 changed, 2 already there, 1 error
         for (i = 1; i <= NR; i++) { print L[i]; if (i == e) { print pad "volumes:"; print ipad "- \x27" vol "\x27" } }
       }
     }' "$f" >"$tmp"; then
-    rm -f "$tmp"; warn "Could not edit $f automatically (non-standard format)"; return 1
+    rm -f "$tmp"; warn "Не удалось автоматически отредактировать $f (нестандартный формат)"; return 1
   fi
   cat "$tmp" >"$f"; rm -f "$tmp"
   return 0
 }
 
 if [ "$SKIP_NODE" -eq 0 ]; then
-  step "Configuring the remnanode node"
+  step "Настройка ноды remnanode"
   mkdir -p "$(dirname "$LOG_FILE")"
   [ -d "$LOG_DIR_DEFAULT" ] || mkdir -p "$LOG_DIR_DEFAULT"
-  ok "Log folder: $(dirname "$LOG_FILE")"
+  ok "Папка логов: $(dirname "$LOG_FILE")"
 
   COMPOSE_FILE=""
   for c in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
@@ -455,10 +456,10 @@ if [ "$SKIP_NODE" -eq 0 ]; then
   done
 
   if [ -z "$COMPOSE_FILE" ]; then
-    warn "No docker-compose found in $NODE_DIR. If the node lives elsewhere, use --node-dir; if Xray is not in docker, use --skip-node."
+    warn "В $NODE_DIR не найден docker-compose. Если нода в другой папке — укажи --node-dir; если Xray не в docker — запусти с --skip-node."
   else
     DC="$(compose_cmd)"
-    [ -n "$DC" ] || die "docker compose not found, but $COMPOSE_FILE exists"
+    [ -n "$DC" ] || die "docker compose не найден, хотя есть $COMPOSE_FILE"
     BACKUP="$COMPOSE_FILE.bak.$(date +%Y%m%d-%H%M%S)"
     cp -a "$COMPOSE_FILE" "$BACKUP"
     rc=0; patch_compose "$COMPOSE_FILE" || rc=$?
@@ -466,14 +467,14 @@ if [ "$SKIP_NODE" -eq 0 ]; then
       0)
         if (cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" config -q) 2>/dev/null \
            && (cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" config 2>/dev/null) | has "/var/log/remnanode"; then
-          ok "Volume added to $COMPOSE_FILE (backup: $BACKUP)"
+          ok "Volume добавлен в $COMPOSE_FILE (бэкап: $BACKUP)"
           COMPOSE_CHANGED=1
         else
           cp -a "$BACKUP" "$COMPOSE_FILE"
-          die "After the edit, docker compose did not validate the file — restored from backup. Add the volume by hand: - '$VOLUME_LINE'"
+          die "После правки docker compose не принял файл — восстановлен из бэкапа. Добавь volume вручную: - '$VOLUME_LINE'"
         fi ;;
-      2) ok "Volume /var/log/remnanode is already in $COMPOSE_FILE"; rm -f "$BACKUP"; COMPOSE_CHANGED=0 ;;
-      *) cp -a "$BACKUP" "$COMPOSE_FILE"; die "Add the volume to $COMPOSE_FILE by hand: - '$VOLUME_LINE', then rerun the script" ;;
+      2) ok "Volume /var/log/remnanode уже есть в $COMPOSE_FILE"; rm -f "$BACKUP"; COMPOSE_CHANGED=0 ;;
+      *) cp -a "$BACKUP" "$COMPOSE_FILE"; die "Добавь volume в $COMPOSE_FILE вручную: - '$VOLUME_LINE', потом перезапусти скрипт" ;;
     esac
 
     CONTAINER="$(cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" ps -q 2>/dev/null | head -n1 || true)"
@@ -482,24 +483,24 @@ if [ "$SKIP_NODE" -eq 0 ]; then
       mounted=1
     fi
     if [ "$mounted" -eq 1 ] && [ "${COMPOSE_CHANGED:-0}" -eq 0 ]; then
-      ok "The container already sees /var/log/remnanode — no restart needed"
+      ok "Контейнер уже видит /var/log/remnanode — перезапуск не нужен"
     elif [ "$NO_RESTART" -eq 1 ]; then
-      warn "--no-restart: recreate the container yourself: cd $NODE_DIR && $DC up -d"
+      warn "--no-restart: пересоздай контейнер сам: cd $NODE_DIR && $DC up -d"
     else
-      info "Recreating the node container (connections will drop for a few seconds)..."
+      info "Пересоздаю контейнер ноды (подключения оборвутся на несколько секунд)..."
       (cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" up -d --force-recreate) >/dev/null 2>&1 \
-        || die "docker compose up failed. Check: cd $NODE_DIR && $DC logs"
+        || die "docker compose up завершился с ошибкой. Смотри: cd $NODE_DIR && $DC logs"
       sleep 3
       CONTAINER="$(cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" ps -q 2>/dev/null | head -n1 || true)"
       if [ -n "$CONTAINER" ] && docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" | has -w "/var/log/remnanode"; then
-        ok "Node restarted, folder mounted"
+        ok "Нода перезапущена, папка подключена"
       else
-        die "The container is up but /var/log/remnanode is not mounted. Check $COMPOSE_FILE"
+        die "Контейнер поднялся, но /var/log/remnanode в нём не подключена. Проверь $COMPOSE_FILE"
       fi
     fi
   fi
 
-  # logrotate exactly as in the instructions
+  # logrotate — ровно как в инструкции
   cat >"$LOGROTATE_PATH" <<'EOF'
 /var/log/remnanode/*.log {
     size 50M
@@ -512,42 +513,42 @@ if [ "$SKIP_NODE" -eq 0 ]; then
 EOF
   chmod 644 "$LOGROTATE_PATH"
   if logrotate -d "$LOGROTATE_PATH" >/dev/null 2>&1; then ok "logrotate: $LOGROTATE_PATH"
-  else warn "logrotate -d reported a problem in $LOGROTATE_PATH"; fi
+  else warn "logrotate -d нашёл проблему в $LOGROTATE_PATH"; fi
 else
-  info "--skip-node: not touching the node"
+  info "--skip-node: ноду не трогаю"
   mkdir -p "$(dirname "$LOG_FILE")"
 fi
 
 # ============================================================================
-#  REMOVE THE OLD PACKAGE
+#  УДАЛЕНИЕ СТАРОГО ПАКЕТА
 # ============================================================================
-step "Checking for an old install"
+step "Проверка старой установки"
 if systemctl is-active --quiet tblocker 2>/dev/null; then
-  info "Stopping the running tblocker..."
+  info "Останавливаю работающий tblocker..."
   systemctl stop tblocker
 fi
 CONFIG_BACKUP=""
 if [ -f "$CONFIG_PATH" ]; then
   CONFIG_BACKUP="$CONFIG_PATH.bak.$(date +%Y%m%d-%H%M%S)"
   cp -a "$CONFIG_PATH" "$CONFIG_BACKUP"
-  info "Old config saved: $CONFIG_BACKUP"
+  info "Старый конфиг сохранён: $CONFIG_BACKUP"
 fi
 if command -v dpkg >/dev/null 2>&1 && dpkg -s tblocker >/dev/null 2>&1; then
-  info "Removing the old apt package tblocker..."
-  DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq tblocker >/dev/null || warn "apt-get remove tblocker failed"
+  info "Удаляю старый apt-пакет tblocker..."
+  DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq tblocker >/dev/null || warn "apt-get remove tblocker завершился с ошибкой"
   rm -f /etc/apt/sources.list.d/openrepo-xray-tools.list
-  ok "Old package removed"
+  ok "Старый пакет удалён"
 elif command -v rpm >/dev/null 2>&1 && rpm -q tblocker >/dev/null 2>&1; then
-  info "Removing the old rpm package tblocker..."
-  { command -v dnf >/dev/null && dnf remove -y -q tblocker; } || yum remove -y -q tblocker || warn "Failed to remove the rpm package"
+  info "Удаляю старый rpm-пакет tblocker..."
+  { command -v dnf >/dev/null && dnf remove -y -q tblocker; } || yum remove -y -q tblocker || warn "Не удалось удалить rpm-пакет"
 else
-  ok "No old package found"
+  ok "Старого пакета нет"
 fi
 
 # ============================================================================
-#  DOWNLOAD
+#  СКАЧИВАНИЕ
 # ============================================================================
-step "Downloading tblocker"
+step "Скачивание tblocker"
 TMP_DIR="$(mktemp -d)"
 
 resolve_latest() {
@@ -555,7 +556,7 @@ resolve_latest() {
   tag="$(curl -fsSL --max-time 15 -H 'Accept: application/vnd.github+json' \
           "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
         | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')" || true
-  if [ -z "$tag" ]; then # no API (rate limit) — use the redirect
+  if [ -z "$tag" ]; then # API недоступен (лимит запросов) — берём из редиректа
     tag="$(curl -fsSIL --max-time 15 -o /dev/null -w '%{url_effective}' \
             "https://github.com/$REPO/releases/latest" 2>/dev/null | sed -E 's#.*/tag/##')" || true
   fi
@@ -563,87 +564,87 @@ resolve_latest() {
 }
 
 if [ -n "$TARBALL" ]; then
-  [ -f "$TARBALL" ] || die "No such file: $TARBALL"
+  [ -f "$TARBALL" ] || die "Нет такого файла: $TARBALL"
   cp "$TARBALL" "$TMP_DIR/tb.tar.gz"
-  info "Using the local archive: $TARBALL"
+  info "Использую локальный архив: $TARBALL"
 else
   if [ -z "$VERSION" ]; then
     VERSION="$(resolve_latest)"
     if [ -z "$VERSION" ]; then
-      VERSION="$FALLBACK_VERSION"; warn "Could not determine the latest version, using $VERSION"
+      VERSION="$FALLBACK_VERSION"; warn "Не удалось узнать последнюю версию, ставлю $VERSION"
     fi
   fi
   [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
   ASSET="xray-torrent-blocker-${VERSION}-linux-${ARCH}.tar.gz"
   BASE="https://github.com/$REPO/releases/download/$VERSION"
-  info "Version $VERSION → $ASSET"
+  info "Версия $VERSION → $ASSET"
   curl -fL --retry 3 --retry-delay 2 --max-time 120 -sS "$BASE/$ASSET" -o "$TMP_DIR/tb.tar.gz" \
-    || die "Failed to download $BASE/$ASSET"
+    || die "Не удалось скачать $BASE/$ASSET"
   if curl -fsSL --retry 2 --max-time 30 "$BASE/checksums.txt" -o "$TMP_DIR/checksums.txt" 2>/dev/null; then
     expected="$(awk -v a="$ASSET" '$2==a || $2=="*"a {print $1}' "$TMP_DIR/checksums.txt")"
     actual="$(sha256sum "$TMP_DIR/tb.tar.gz" | awk '{print $1}')"
-    [ -n "$expected" ] || die "No entry for $ASSET in checksums.txt"
-    [ "$expected" = "$actual" ] || die "SHA256 mismatch! expected $expected, got $actual"
-    ok "SHA256 verified"
+    [ -n "$expected" ] || die "В checksums.txt нет записи для $ASSET"
+    [ "$expected" = "$actual" ] || die "SHA256 не совпадает! Ожидалось $expected, получено $actual"
+    ok "SHA256 совпадает"
   else
-    warn "checksums.txt unavailable — checksum not verified"
+    warn "checksums.txt недоступен — контрольная сумма не проверена"
   fi
 fi
 
 mkdir -p "$TMP_DIR/x"
-tar -xzf "$TMP_DIR/tb.tar.gz" -C "$TMP_DIR/x" || die "Archive is corrupted"
+tar -xzf "$TMP_DIR/tb.tar.gz" -C "$TMP_DIR/x" || die "Архив повреждён"
 NEW_BIN="$(find "$TMP_DIR/x" -type f -name tblocker | head -n1)"
-[ -n "$NEW_BIN" ] || die "No tblocker binary in the archive"
+[ -n "$NEW_BIN" ] || die "В архиве нет бинарника tblocker"
 chmod +x "$NEW_BIN"
-"$NEW_BIN" -v >/dev/null 2>&1 || die "The binary does not run on this system"
+"$NEW_BIN" -v >/dev/null 2>&1 || die "Бинарник не запускается на этой системе"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$NEW_BIN" "$BIN_PATH.new"
 mv -f "$BIN_PATH.new" "$BIN_PATH"
-ok "Installed: $("$BIN_PATH" -v 2>&1 | tail -n1)"
+ok "Установлено: $("$BIN_PATH" -v 2>&1 | tail -n1)"
 
 # ============================================================================
-#  KERNEL AND FIREWALL
+#  ЯДРО И ФАЙРВОЛ
 # ============================================================================
-step "Checking the kernel and firewall"
-# tblocker checks the module exactly like this: the output of `lsmod` must contain
-# nf_conntrack, otherwise it exits on start. So we check the same way.
+step "Проверка ядра и файрвола"
+# tblocker проверяет модуль именно так: в выводе `lsmod` должен быть
+# nf_conntrack, иначе он падает при старте. Поэтому проверяем так же.
 if ! lsmod 2>/dev/null | has 'nf_conntrack'; then
   modprobe nf_conntrack 2>/dev/null || true
 fi
 if lsmod 2>/dev/null | has 'nf_conntrack'; then
-  ok "nf_conntrack loaded"
+  ok "nf_conntrack загружен"
 else
-  die "nf_conntrack is missing from lsmod (OpenVZ/LXC container or a kernel without modules) — tblocker will not start on this server."
+  die "nf_conntrack нет в lsmod (контейнер OpenVZ/LXC или ядро без модулей) — tblocker на этом сервере не запустится."
 fi
 mkdir -p /etc/modules-load.d && echo nf_conntrack >/etc/modules-load.d/conntrack.conf
 
 if [ "$FIREWALL" = "iptables" ]; then
   iptables -w -t raw -L PREROUTING -n >/dev/null 2>&1 \
-    || die "iptables cannot access the raw table. Try --firewall nft"
-  ok "iptables (raw table) available"
-  # when switching from nft, remove the old table, otherwise its blocks would never be lifted
+    || die "iptables не может работать с таблицей raw. Попробуй --firewall nft"
+  ok "iptables (таблица raw) доступен"
+  # при переходе с nft убираем старую таблицу, иначе её блокировки никогда не снимутся
   if command -v nft >/dev/null 2>&1 && nft list table inet tblocker >/dev/null 2>&1; then
-    nft delete table inet tblocker && info "Removed the leftover nft table tblocker"
+    nft delete table inet tblocker && info "Удалена оставшаяся nft-таблица tblocker"
   fi
 else
-  nft list tables >/dev/null 2>&1 || die "nft is not working"
-  ok "nftables available"
-  # when switching from iptables, remove the old chain
+  nft list tables >/dev/null 2>&1 || die "nft не работает"
+  ok "nftables доступен"
+  # при переходе с iptables убираем старую цепочку
   if command -v iptables >/dev/null 2>&1 && iptables -w -t raw -S "$CHAIN" >/dev/null 2>&1; then
     while iptables -w -t raw -D PREROUTING -j "$CHAIN" 2>/dev/null; do :; done
     iptables -w -t raw -F "$CHAIN" 2>/dev/null || true
     iptables -w -t raw -X "$CHAIN" 2>/dev/null || true
-    info "Removed the leftover iptables chain $CHAIN"
+    info "Удалена оставшаяся цепочка iptables $CHAIN"
   fi
 fi
 
 # ============================================================================
-#  CONFIG
+#  КОНФИГ
 # ============================================================================
-write_config() { # write_config <path> <logfile> <storage> <send:true|false> <webhook> <duration> <bypass...>
+write_config() { # write_config <путь> <лог> <хранилище> <send:true|false> <вебхук> <срок> <bypass...>
   local path="$1" lf="$2" sd="$3" send="$4" wh="$5" dur="$6"; shift 6
   {
-    echo "# Generated by install-tblocker.sh $(date '+%F %T')"
+    echo "# Создано install-tblocker.sh $(date '+%F %T')"
     echo "LogFile: $(yaml_q "$lf")"
     echo "BlockDuration: $dur"
     echo 'TorrentTag: "TORRENT"'
@@ -660,23 +661,23 @@ write_config() { # write_config <path> <logfile> <storage> <send:true|false> <we
   chmod 600 "$path"
 }
 
-step "Configuration"
+step "Конфигурация"
 SEND="false"; [ -n "$WEBHOOK" ] && SEND="true"
 write_config "$CONFIG_PATH" "$LOG_FILE" "$INSTALL_DIR" "$SEND" "$WEBHOOK" "$DURATION" "${BYPASS[@]}"
-ok "Config: $CONFIG_PATH"
+ok "Конфиг: $CONFIG_PATH"
 
 # ============================================================================
-#  SELF-TEST (isolated copy, webhook off)
+#  САМОТЕСТ (изолированная копия, вебхук выключен)
 # ============================================================================
 if [ "$SKIP_SELFTEST" -eq 0 ]; then
-  step "Self-test (test IP $TEST_IP, webhook off)"
+  step "Самотест (тестовый IP $TEST_IP, вебхук выключен)"
   ST="$TMP_DIR/selftest"; mkdir -p "$ST"
   : >"$ST/access.log"
   write_config "$ST/config.yaml" "$ST/access.log" "$ST" "false" "" 1 "127.0.0.1"
   fw_unblock "$TEST_IP"
   "$BIN_PATH" -c "$ST/config.yaml" >"$ST/out.log" 2>&1 &
   SELFTEST_PID=$!
-  # wait for the log to be opened
+  # ждём, пока tblocker откроет лог
   for _ in $(seq 1 20); do
     grep -q "Initialized byte search patterns" "$ST/out.log" 2>/dev/null && break
     kill -0 "$SELFTEST_PID" 2>/dev/null || break
@@ -685,7 +686,7 @@ if [ "$SKIP_SELFTEST" -eq 0 ]; then
   sleep 1
   if ! kill -0 "$SELFTEST_PID" 2>/dev/null; then
     cat "$ST/out.log" >&2
-    die "tblocker crashed on start (see output above)"
+    die "tblocker упал при запуске (вывод выше)"
   fi
   printf '%s from tcp:%s:51413 accepted tcp:198.51.100.7:6881 [VLESS_REALITY >> TORRENT] email: tblocker_selftest\n' \
     "$(date '+%Y/%m/%d %H:%M:%S.000000')" "$TEST_IP" >>"$ST/access.log"
@@ -699,17 +700,17 @@ if [ "$SKIP_SELFTEST" -eq 0 ]; then
   SELFTEST_PID=""
   fw_unblock "$TEST_IP"
   if [ "$passed" -eq 1 ]; then
-    ok "Self-test passed: log line → parsing → block in $FIREWALL (rule removed)"
+    ok "Самотест пройден: строка лога → разбор → блокировка в $FIREWALL (правило убрано)"
   else
     sed 's/^/    /' "$ST/out.log" >&2
-    die "Self-test failed: tblocker did not block the test IP (tblocker output above)"
+    die "Самотест провален: tblocker не заблокировал тестовый IP (вывод tblocker выше)"
   fi
 fi
 
 # ============================================================================
 #  SYSTEMD
 # ============================================================================
-step "Starting the service"
+step "Запуск сервиса"
 cat >"$SERVICE_PATH" <<EOF
 [Unit]
 Description=XRay Torrent Blocker Service
@@ -731,7 +732,7 @@ systemctl daemon-reload
 systemctl enable tblocker >/dev/null 2>&1
 systemctl restart tblocker
 
-# watch for 10 s: any drop (including an auto-restart) counts as a failure
+# следим 10 секунд: любое падение (включая авторестарт) считается ошибкой
 active=1
 for _ in $(seq 1 10); do
   sleep 1
@@ -739,71 +740,71 @@ for _ in $(seq 1 10); do
 done
 if [ "$active" -ne 1 ]; then
   journalctl -u tblocker -n 30 --no-pager >&2 || true
-  die "The tblocker service did not start (log above)"
+  die "Сервис tblocker не запустился (лог выше)"
 fi
-ok "tblocker is running and stays up"
+ok "tblocker запущен и работает стабильно"
 
 if [ "$FIREWALL" = "iptables" ]; then
-  if iptables -w -t raw -S PREROUTING 2>/dev/null | has -- "-j $CHAIN"; then ok "Chain $CHAIN hooked into raw/PREROUTING"
-  else warn "No jump to $CHAIN in raw/PREROUTING yet — check: journalctl -u tblocker"; fi
+  if iptables -w -t raw -S PREROUTING 2>/dev/null | has -- "-j $CHAIN"; then ok "Цепочка $CHAIN подключена в raw/PREROUTING"
+  else warn "Перехода в $CHAIN в raw/PREROUTING пока нет — смотри: journalctl -u tblocker"; fi
 else
-  if nft list table inet tblocker >/dev/null 2>&1; then ok "nft table inet tblocker created"
-  else warn "No nft table tblocker yet — check: journalctl -u tblocker"; fi
+  if nft list table inet tblocker >/dev/null 2>&1; then ok "nft-таблица inet tblocker создана"
+  else warn "nft-таблицы tblocker пока нет — смотри: journalctl -u tblocker"; fi
 fi
 
 # ============================================================================
-#  XRAY LOG CHECK
+#  ПРОВЕРКА ЛОГА XRAY
 # ============================================================================
-step "Checking the Xray log"
+step "Проверка лога Xray"
 if [ -s "$LOG_FILE" ]; then
   age=$(( $(date +%s) - $(stat -c %Y "$LOG_FILE") ))
   if [ "$age" -lt 600 ]; then
-    ok "Xray is writing $LOG_FILE (last write ${age}s ago)"
+    ok "Xray пишет в $LOG_FILE (последняя запись ${age} с назад)"
     if tail -n 200 "$LOG_FILE" | has " accepted " && ! tail -n 200 "$LOG_FILE" | has "email: "; then
-      warn "The log has no 'email:' fields — tblocker cannot identify users."
+      warn "В логе нет полей 'email:' — tblocker не сможет определить пользователей."
     fi
   else
-    warn "$LOG_FILE has not been updated for ${age}s — is there traffic and is the log configured in the profile?"
+    warn "$LOG_FILE не обновлялся ${age} с — есть ли трафик и прописан ли лог в профиле?"
   fi
 else
-  warn "$LOG_FILE is empty or missing — Xray is not writing access logs yet."
+  warn "$LOG_FILE пустой или отсутствует — Xray пока не пишет access-лог."
 fi
 
 # ============================================================================
-#  SUMMARY
+#  ИТОГ
 # ============================================================================
 printf '\n%s=====================================================================%s\n' "$C_G" "$C_0"
-ok "Installation finished"
+ok "Установка завершена"
 printf '%s=====================================================================%s\n' "$C_G" "$C_0"
 cat <<EOF
-  Server (hostname)  : $NODE_NAME     <- add to SERVER_COUNTRIES in Solobot
-  Log                : $LOG_FILE
-  Firewall           : $FIREWALL
-  Block for          : $DURATION min
-  Webhook            : ${WEBHOOK:-off}
+  Сервер (hostname)  : $NODE_NAME     <- впиши в SERVER_COUNTRIES в Solobot
+  Лог                : $LOG_FILE
+  Файрвол            : $FIREWALL
+  Срок блокировки    : $DURATION мин
+  Вебхук             : ${WEBHOOK:-выключен}
   Bypass             : ${BYPASS[*]}
-  Config             : $CONFIG_PATH${CONFIG_BACKUP:+  (old one: $CONFIG_BACKUP)}
+  Конфиг             : $CONFIG_PATH${CONFIG_BACKUP:+  (старый: $CONFIG_BACKUP)}
 
-  Logs:    journalctl -u tblocker -f
-  Status:  systemctl status tblocker
-  Removal: bash <(curl -fsSL https://raw.githubusercontent.com/kafka7005/tblocker-installer/main/install-tblocker.sh) --uninstall
+  Логи:     journalctl -u tblocker -f
+  Статус:   systemctl status tblocker
+  Удаление: bash <(curl -fsSL $SCRIPT_URL) --uninstall
 EOF
 
 cat <<'EOF'
 
-  ─── Check in the Remnawave panel (Profiles → Xray config) ───
+  ─── Проверь в панели Remnawave (Профили → конфиг Xray) ───
   "log": {
       "error": "/var/log/remnanode/error.log",
       "access": "/var/log/remnanode/access.log",
       "loglevel": "warning"
   }
 
-  in "outbounds":
+  в "outbounds":
   { "tag": "TORRENT", "protocol": "blackhole" }
 
-  in "routing" → "rules":
+  в "routing" → "rules":
   { "type": "field", "protocol": ["bittorrent"], "outboundTag": "TORRENT" }
 
-  For bittorrent detection, the inbounds need "sniffing": { "enabled": true }.
+  Чтобы Xray распознавал bittorrent, у инбаундов должно быть "sniffing": { "enabled": true }.
 EOF
 echo
