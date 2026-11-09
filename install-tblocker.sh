@@ -169,6 +169,10 @@ while [ $# -gt 0 ]; do
 done
 
 # ----------------------------- helpers --------------------------------------
+# Like `grep -q`, but reads ALL input. With pipefail, `cmd | grep -q` fails when
+# cmd gets SIGPIPE after grep exits early (e.g. lsmod with long output).
+has() { grep "$@" >/dev/null; }
+
 yaml_q() { # string -> "escaped string" for YAML
   local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"
 }
@@ -252,7 +256,7 @@ fw_has_ip() {
   if [ "$FIREWALL" = "iptables" ]; then
     iptables -w -t raw -C "$CHAIN" -s "$ip" -j DROP 2>/dev/null
   else
-    nft list set inet tblocker TBLOCKER_BLOCKED_IPS 2>/dev/null | grep -qw -- "$ip"
+    nft list set inet tblocker TBLOCKER_BLOCKED_IPS 2>/dev/null | has -w -- "$ip"
   fi
 }
 
@@ -461,7 +465,7 @@ if [ "$SKIP_NODE" -eq 0 ]; then
     case "$rc" in
       0)
         if (cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" config -q) 2>/dev/null \
-           && (cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" config 2>/dev/null) | grep -q "/var/log/remnanode"; then
+           && (cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" config 2>/dev/null) | has "/var/log/remnanode"; then
           ok "Volume added to $COMPOSE_FILE (backup: $BACKUP)"
           COMPOSE_CHANGED=1
         else
@@ -474,7 +478,7 @@ if [ "$SKIP_NODE" -eq 0 ]; then
 
     CONTAINER="$(cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" ps -q 2>/dev/null | head -n1 || true)"
     mounted=0
-    if [ -n "$CONTAINER" ] && docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" 2>/dev/null | grep -qw "/var/log/remnanode"; then
+    if [ -n "$CONTAINER" ] && docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" 2>/dev/null | has -w "/var/log/remnanode"; then
       mounted=1
     fi
     if [ "$mounted" -eq 1 ] && [ "${COMPOSE_CHANGED:-0}" -eq 0 ]; then
@@ -487,7 +491,7 @@ if [ "$SKIP_NODE" -eq 0 ]; then
         || die "docker compose up failed. Check: cd $NODE_DIR && $DC logs"
       sleep 3
       CONTAINER="$(cd "$NODE_DIR" && $DC -f "$COMPOSE_FILE" ps -q 2>/dev/null | head -n1 || true)"
-      if [ -n "$CONTAINER" ] && docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" | grep -qw "/var/log/remnanode"; then
+      if [ -n "$CONTAINER" ] && docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" | has -w "/var/log/remnanode"; then
         ok "Node restarted, folder mounted"
       else
         die "The container is up but /var/log/remnanode is not mounted. Check $COMPOSE_FILE"
@@ -603,10 +607,10 @@ ok "Installed: $("$BIN_PATH" -v 2>&1 | tail -n1)"
 step "Checking the kernel and firewall"
 # tblocker checks the module exactly like this: the output of `lsmod` must contain
 # nf_conntrack, otherwise it exits on start. So we check the same way.
-if ! lsmod 2>/dev/null | grep -q 'nf_conntrack'; then
+if ! lsmod 2>/dev/null | has 'nf_conntrack'; then
   modprobe nf_conntrack 2>/dev/null || true
 fi
-if lsmod 2>/dev/null | grep -q 'nf_conntrack'; then
+if lsmod 2>/dev/null | has 'nf_conntrack'; then
   ok "nf_conntrack loaded"
 else
   die "nf_conntrack is missing from lsmod (OpenVZ/LXC container or a kernel without modules) — tblocker will not start on this server."
@@ -740,7 +744,7 @@ fi
 ok "tblocker is running and stays up"
 
 if [ "$FIREWALL" = "iptables" ]; then
-  if iptables -w -t raw -S PREROUTING 2>/dev/null | grep -q -- "-j $CHAIN"; then ok "Chain $CHAIN hooked into raw/PREROUTING"
+  if iptables -w -t raw -S PREROUTING 2>/dev/null | has -- "-j $CHAIN"; then ok "Chain $CHAIN hooked into raw/PREROUTING"
   else warn "No jump to $CHAIN in raw/PREROUTING yet — check: journalctl -u tblocker"; fi
 else
   if nft list table inet tblocker >/dev/null 2>&1; then ok "nft table inet tblocker created"
@@ -755,7 +759,7 @@ if [ -s "$LOG_FILE" ]; then
   age=$(( $(date +%s) - $(stat -c %Y "$LOG_FILE") ))
   if [ "$age" -lt 600 ]; then
     ok "Xray is writing $LOG_FILE (last write ${age}s ago)"
-    if tail -n 200 "$LOG_FILE" | grep -q " accepted " && ! tail -n 200 "$LOG_FILE" | grep -q "email: "; then
+    if tail -n 200 "$LOG_FILE" | has " accepted " && ! tail -n 200 "$LOG_FILE" | has "email: "; then
       warn "The log has no 'email:' fields — tblocker cannot identify users."
     fi
   else
